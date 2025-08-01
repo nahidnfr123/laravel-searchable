@@ -4,202 +4,143 @@ namespace NahidFerdous\Searchable;
 
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 trait Searchable
 {
-    /**
-     * Scope a query to search for term in the attributes
-     *
-     * @param Builder $query
-     * @return Builder
-     */
-    protected function scopeSearch(Builder $query): Builder
+    public function scopeSearch(Builder $query, ?string $term = null, array $attributes = []): Builder
     {
-        [$searchTerm, $attributes] = $this->parseArguments(func_get_args());
+        $term = $term ?? request(config('searchable.key', 'q'));
+        $attributes = $attributes ?: $this->searchableAttributes();
 
-        if (!isset($searchTerm) || !$attributes) { // Check $searchTerm by isset() instead of empty() because $searchTerm can be 0
+        if (
+            !$term
+            || empty($attributes)
+            || strlen($term) < config('searchable.min_search_length', 1)
+        ) {
             return $query;
         }
 
-        return $query->where(function (Builder $query) use ($searchTerm, $attributes) {
+        return $query->where(function (Builder $query) use ($term, $attributes) {
             foreach ($attributes as $attribute) {
-                $query->when(
-                    str_contains($attribute, '|'),
-                    function (Builder $query) use ($searchTerm, $attribute) {
-                        [$relationName, $relationAttribute] = $this->relationName($attribute);
-
-                        $query->when(
-                            str_contains($relationAttribute, ','),
-                            function (Builder $query) use ($searchTerm, $relationName, $relationAttribute) {
-                                $relationAttributes = explode(',', $relationAttribute);
-                                $query->orWhereHas($relationName, function (Builder $query) use ($searchTerm, $relationAttributes) {
-                                    $query->where(function (Builder $query) use ($searchTerm, $relationAttributes) {
-                                        foreach ($relationAttributes as $relationAttribute) {
-                                            if (str_contains($relationAttribute, '%')) {
-                                                $relationAttribute = str_replace('%', '', $relationAttribute);
-                                                if (str_contains($relationAttribute, '+')) {
-                                                    $relationAttributes = explode('+', $relationAttribute);
-//                                                    $query->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ['%'.$searchTerm.'%']);
-                                                    $query->orWhere(DB::raw("concat($relationAttributes[0], ' ', $relationAttributes[1])"), 'LIKE', "%" . $searchTerm . "%");
-                                                } else {
-                                                    $query->orWhere($relationAttribute, 'LIKE', "%{$searchTerm}%");
-                                                }
-                                            } else {
-                                                $query->orWhere($relationAttribute, $searchTerm);
-                                            }
-                                        }
-                                    });
-                                });
-                            },
-                            function (Builder $query) use ($searchTerm, $relationName, $relationAttribute) {
-                                $query->orWhereHas($relationName, function (Builder $query) use ($searchTerm, $relationAttribute) {
-                                    if (str_contains($relationAttribute, '%')) {
-                                        $relationAttribute = str_replace('%', '', $relationAttribute);
-                                        if (str_contains($relationAttribute, '+')) {
-                                            $relationAttributes = explode('+', $relationAttribute);
-                                            $query->where(DB::raw("concat($relationAttributes[0], ' ', $relationAttributes[1])"), 'LIKE', "%" . $searchTerm . "%");
-                                        } else {
-                                            $query->where($relationAttribute, 'LIKE', "%{$searchTerm}%");
-                                        }
-                                    } else {
-                                        $query->where($relationAttribute, $searchTerm);
-                                    }
-                                });
-                            });
-                    },
-                    function (Builder $query) use ($searchTerm, $attribute) {
-                        if (str_contains($attribute, '%')) {
-                            $attribute = str_replace('%', '', $attribute);
-                            $query->orWhere($attribute, 'LIKE', "%{$searchTerm}%");
-                        } else {
-                            $query->orWhere($attribute, $searchTerm);
-                        }
-                    }
-                );
+                $this->applySearchCondition($query, $term, $attribute);
             }
         });
     }
 
-    /**
-     * Extract Relation Name and Relation Attribute from the attribute
-     *
-     * @param $attribute
-     * @return array
-     */
-    protected function relationName($attribute): array
+    public function scopeSearchDate(Builder $query, ?string $term = null, array $attributes = [], string $operator = '='): Builder
     {
-        $relationName = '';
-        $relationAttribute = '';
-        $array = explode('|', $attribute);
-        if (count($array) > 1) {
-            $relationName = Arr::first($array);
-            $relationAttribute = Arr::last($array);
-        }
-        return [$relationName, $relationAttribute];
-    }
+        $term = $term ?? request(config('searchable.key', 'q'));
 
-    /**
-     * Scope a query to search for term in the attributes
-     *
-     * @param Builder $query
-     * @return Builder
-     */
-    protected function scopeSearchDate(Builder $query): Builder
-    {
-        [$searchTerm, $attributes, $operator] = $this->parseArguments(func_get_args());
-        if (!$searchTerm || !$attributes || !$operator) {
+        if (!$term || empty($attributes)) {
             return $query;
         }
 
-        return $query->where(function (Builder $query) use ($searchTerm, $attributes, $operator) {
+        return $query->where(function (Builder $query) use ($term, $attributes, $operator) {
             foreach ($attributes as $attribute) {
-                $query->when(
-                    str_contains($attribute, '|'),
-                    function (Builder $query) use ($searchTerm, $attribute, $operator) {
-                        [$relationName, $relationAttribute] = explode('.', $attribute);
-
-                        $query->when(
-                            str_contains($relationAttribute, ','),
-                            function (Builder $query) use ($searchTerm, $relationName, $relationAttribute, $operator) {
-                                $relationAttributes = explode(',', $relationAttribute);
-                                $query->orWhereHas($relationName, function (Builder $query) use ($searchTerm, $relationAttributes, $operator) {
-                                    $query->where(function (Builder $query) use ($searchTerm, $relationAttributes, $operator) {
-                                        foreach ($relationAttributes as $relationAttribute) {
-                                            if (str_contains($searchTerm, ' - ')) {
-                                                $searchTerm = explode(' - ', $searchTerm);
-                                                $start = Carbon::parse($searchTerm[0]);
-                                                $end = Carbon::parse($searchTerm[1]);
-                                                $query->orWhereBetween($relationAttribute, [$start, $end]);
-                                            } else {
-                                                $query->orWhereDate($relationAttribute, $operator, $searchTerm);
-                                            }
-                                        }
-                                    });
-                                });
-                            },
-                            function (Builder $query) use ($searchTerm, $relationName, $relationAttribute, $operator) {
-                                $query->orWhereHas($relationName, function (Builder $query) use ($searchTerm, $relationAttribute, $operator) {
-                                    if (str_contains($searchTerm, ' - ')) {
-                                        $searchTerm = explode(' - ', $searchTerm);
-                                        $start = Carbon::parse($searchTerm[0]);
-                                        $end = Carbon::parse($searchTerm[1]);
-                                        $query->orWhereBetween($relationAttribute, [$start, $end]);
-                                    } else {
-                                        $query->orWhereDate($relationAttribute, $operator, $searchTerm);
-                                    }
-                                });
-                            });
-                    },
-                    function (Builder $query) use ($searchTerm, $attribute, $operator) {
-                        $query->orWhere(function ($query) use ($searchTerm, $attribute, $operator) {
-                            if (str_contains($searchTerm, ' - ')) {
-                                $searchTerm = explode(' - ', $searchTerm);
-                                $start = Carbon::parse($searchTerm[0]);
-                                $end = Carbon::parse($searchTerm[1]);
-                                $query->whereBetween($attribute, [$start, $end]);
-                            } else {
-                                $query->whereDate($attribute, $operator, $searchTerm);
-                            }
-                        });
-                    }
-                );
+                $this->applyDateCondition($query, $term, $attribute, $operator);
             }
         });
     }
 
-
-    /**
-     * Parse search scope arguments
-     *
-     * @param array $arguments
-     * @return array
-     */
-    private function parseArguments(array $arguments): array
+    protected function applySearchCondition(Builder $query, string $term, string $attribute): void
     {
-        $args_count = count($arguments);
-
-        return match ($args_count) {
-            1 => [request(config('searchable.key')), $this->searchableAttributes()],
-            2 => is_string($arguments[1])
-                ? [$arguments[1], $this->searchableAttributes()]
-                : [request(config('searchable.key')), $arguments[1]],
-            3 => is_string($arguments[1])
-                ? [$arguments[1], $arguments[2]]
-                : [$arguments[2], $arguments[1]],
-            4 => is_string($arguments[1])
-                ? [$arguments[1], $arguments[2], $arguments[3]]
-                : [$arguments[2], $arguments[1], $arguments[3]],
-            default => [null, []],
-        };
+        if (str_contains($attribute, '|')) {
+            [$relation, $column] = explode('|', $attribute);
+            $query->orWhereHas($relation, function (Builder $q) use ($term, $column) {
+                $this->applyColumnCondition($q, $term, $column);
+            });
+        } else {
+            $this->applyColumnCondition($query, $term, $attribute);
+        }
     }
 
-    /**
-     * Get searchable columns
-     *
-     * @return array
-     */
+    protected function applyDateCondition(Builder $query, string $term, string $attribute, string $operator): void
+    {
+        if (str_contains($attribute, '|>')) {
+            [$relation, $column] = explode('|>', $attribute);
+            $query->whereHas($relation, function (Builder $q) use ($term, $column) {
+                $this->applyColumnCondition($q, $term, $column);
+            });
+        } elseif (str_contains($attribute, '|')) {
+            [$relation, $column] = explode('|', $attribute);
+            $query->orWhereHas($relation, function (Builder $q) use ($term, $column) {
+                $this->applyColumnCondition($q, $term, $column);
+            });
+        } else {
+            $this->applyColumnCondition($query, $term, $attribute);
+        }
+    }
+
+    protected function applyColumnCondition(Builder $query, string $term, string $column): void
+    {
+        $caseSensitive = config('searchable.case_sensitive', false);
+        $fulltext = config('searchable.fulltext', false);
+        $operatorMap = config('searchable.operator_map', []);
+
+        $operator = config('searchable.operator', 'LIKE');
+        $value = $term;
+
+        $prefix = $term[0] ?? null;
+
+        if (array_key_exists($prefix, $operatorMap)) {
+            $operator = $operatorMap[$prefix];
+            $value = substr($term, 1);
+        }
+
+        if (Str::contains($column, '+')) {
+            $columns = explode('+', $column);
+            $concat = implode(", ' ', ", $columns);
+            $query->orWhere(DB::raw("CONCAT({$concat})"), 'LIKE', "%{$value}%");
+            return;
+        }
+
+        if ($operator === '~' && $fulltext) {
+            $query->orWhereRaw("MATCH ({$column}) AGAINST (? IN BOOLEAN MODE)", [$value]);
+            return;
+        }
+
+        if ($operator === '@') {
+            $query->orWhereJsonContains($column, $value);
+            return;
+        }
+
+        if ($operator === '%') {
+            $query->orWhere($column, 'LIKE', "%{$value}%");
+            return;
+        }
+
+        if ($operator === '^') {
+            $query->orWhere($column, 'LIKE', "{$value}%");
+            return;
+        }
+
+        if ($operator === '$') {
+            $query->orWhere($column, 'LIKE', "%{$value}");
+            return;
+        }
+
+        // Case-insensitive fallback
+        if (!$caseSensitive && in_array($operator, ['LIKE', '=', '!='])) {
+            $query->orWhereRaw("LOWER({$column}) {$operator} ?", [Str::lower($value)]);
+        } else {
+            $query->orWhere($column, $operator, $value);
+        }
+    }
+
+    protected function applyDateComparison(Builder $query, string $term, string $column, string $operator): void
+    {
+        $query->orWhere(function (Builder $q) use ($term, $column, $operator) {
+            if (str_contains($term, ' - ')) {
+                [$start, $end] = array_map([Carbon::class, 'parse'], explode(' - ', $term));
+                $q->whereBetween($column, [$start, $end]);
+            } else {
+                $q->whereDate($column, $operator, $term);
+            }
+        });
+    }
+
     public function searchableAttributes(): array
     {
         if (method_exists($this, 'searchable')) {
